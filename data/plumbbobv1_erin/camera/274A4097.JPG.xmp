@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<camera name="274A4097.JPG">
+    <calibration cameraMaker="Canon" cameraModel="Canon EOS 5D Mark IV" lense="50.0 mm - Lens Canon EF 50mm F1.2L USM" ccdwidth="29.7942008972" w="6720" h="4480" fx="9767.06013594" fy="9767.06013594" cx="3313.35432765" cy="2265.07281047" k1="0" k2="0" p1="0" p2="0" k3="0" skew="0" name=""/>
+    <extrinsics>
+        <rotation>-0.987415843684 0.158034437622 -0.00592183816996 0.0251583459249 0.120002914865 -0.992454713352 -0.156131384648 -0.980114491756 -0.122468664476</rotation>
+        <translation>-4.07604621502 9.65162369938 19.5324854865</translation>
+    </extrinsics>
+</camera>

@@ -1,0 +1,43 @@
+newmtl Textured_mesh_1_tex0
+Kd 1.0 1.0 1.0
+Ka 0.0 0.0 0.0
+Ks 0.0 0.0 0.0
+d 1.0
+Ns 0.0
+illum 0
+map_Kd Textured_mesh_1_tex0.jpg
+
+
+newmtl Textured_mesh_1_tex1
+Kd 1.0 1.0 1.0
+Ka 0.0 0.0 0.0
+Ks 0.0 0.0 0.0
+d 1.0
+Ns 0.0
+illum 0
+map_Kd Textured_mesh_1_tex1.jpg
+
+
+newmtl Textured_mesh_1_tex2
+Kd 1.0 1.0 1.0
+Ka 0.0 0.0 0.0
+Ks 0.0 0.0 0.0
+d 1.0
+Ns 0.0
+illum 0
+map_Kd Textured_mesh_1_tex2.jpg
+
+
+newmtl Textured_mesh_1_tex3
+Kd 1.0 1.0 1.0
+Ka 0.0 0.0 0.0
+Ks 0.0 0.0 0.0
+d 1.0
+Ns 0.0
+illum 0
+map_Kd Textured_mesh_1_tex3.jpg
+
+
+
+
+#EOF
