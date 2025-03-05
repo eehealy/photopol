@@ -1,0 +1,17 @@
+# Ignore Python cache files
+__pycache__/
+
+# Ignore Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore macOS-specific files
+.DS_Store
+
+# Ignore Git LFS pointer files (if necessary)
+*.obj
+*.ply
+
+# Ignore any other large files (if you track more with LFS)
+*.zip
+*.tar.gz
+
