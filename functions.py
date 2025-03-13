@@ -95,7 +95,7 @@ def filter_and_color_points_by_cylinder(mesh, cylinder_center, radius, height):
     mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
     return mesh
 
-def filter_points_in_cylinder(pcd, cylinder_axis, cylinder_center, cylinder_radius, cylinder_height_min, cylinder_height_max, output_file=None):
+def filter_points_in_cylinder_min_max(pcd, cylinder_axis, cylinder_center, cylinder_radius, cylinder_height_min, cylinder_height_max, output_file=None):
     """
     Filters the points in the point cloud that lie within a specified cylinder.
     
@@ -510,4 +510,411 @@ def plot_meshes_with_vectors(mesh_plate, normal_vector, plate_center,
     ax.legend()
     plt.show()
 
+def filter_points_in_cylinder(pcd, cylinder_axis, cylinder_center, cylinder_radius, cylinder_height, output_file=None):
+    """
+    Filters the points in the point cloud that lie within a specified cylinder.
+    
+    Parameters:
+    - pcd: The input point cloud (Open3D PointCloud object).
+    - cylinder_axis: The axis of the cylinder (e.g., np.array([0, 0, 1])).
+    - cylinder_center: The center of the cylinder (e.g., np.array([0, 0, 0])).
+    - cylinder_radius: The radius of the cylinder.
+    - cylinder_height: The height of the cylinder (the total height from the center, extending ± height/2 along the axis).
+    - output_file: The path to save the filtered point cloud (optional).
+    
+    Returns:
+    - filtered_pcd: The filtered point cloud (Open3D PointCloud object).
+    """
+    
+    # Convert to numpy array for easier manipulation
+    points = np.asarray(pcd.points)
 
+    # Check if color information is available
+    if pcd.has_colors():
+        colors = np.asarray(pcd.colors)
+    else:
+        colors = np.ones_like(points)  # Set to white if no color info is available
+
+    # Compute vector from cylinder center to each point
+    vectors = points - cylinder_center
+
+    # Project each vector onto the cylinder axis
+    projected_lengths = np.dot(vectors, cylinder_axis)  # Scalar projection onto the axis
+    projected_points = np.outer(projected_lengths, cylinder_axis)  # Convert scalars to vectors
+
+    # Compute the radial distance from the cylinder axis (perpendicular distance)
+    radial_vectors = vectors - projected_points
+    radial_distances = np.linalg.norm(radial_vectors, axis=1)
+
+    # Compute height limits based on the center
+    half_height = cylinder_height / 2
+    within_height = np.abs(projected_lengths) <= half_height
+
+    # Check if points are within the radius and height limits
+    within_radius = radial_distances <= cylinder_radius
+
+    # Combine both conditions
+    valid_mask = within_radius & within_height
+    valid_points = points[valid_mask]
+    valid_colors = colors[valid_mask]  # Keep the colors of the valid points
+
+    # Create a new point cloud with the valid points
+    filtered_pcd = o3d.geometry.PointCloud()
+    filtered_pcd.points = o3d.utility.Vector3dVector(valid_points)
+    filtered_pcd.colors = o3d.utility.Vector3dVector(valid_colors)  # Assign original colors
+
+    # Visualize the filtered point cloud
+    o3d.visualization.draw_geometries([filtered_pcd])
+
+    # Optionally, save the filtered point cloud to a new file
+    if output_file:
+        o3d.io.write_point_cloud(output_file, filtered_pcd)
+        print(f"Filtered point cloud saved to {output_file}")
+
+    return filtered_pcd
+
+
+def find_cylinder_axis_center_radius(geometry):
+    """
+    Given a point cloud or mesh, this function returns the axis direction, center, and radius of a cylinder-like structure.
+    It uses PCA (Principal Component Analysis) to find the axis and calculates the center as the mean of the points.
+    The radius is estimated as the mean radial distance from the axis.
+
+    Parameters:
+    - geometry (open3d.geometry.TriangleMesh or open3d.geometry.PointCloud): The input mesh or point cloud to process.
+
+    Returns:
+    - tuple: (cylinder_axis, cylinder_center, cylinder_radius)
+      - cylinder_axis (numpy.ndarray): The direction of the cylinder's axis.
+      - cylinder_center (numpy.ndarray): The center of the cylinder.
+      - cylinder_radius (float): The estimated radius of the cylinder.
+    """
+    # Extract points from the input geometry
+    if isinstance(geometry, o3d.geometry.TriangleMesh):
+        points = np.asarray(geometry.vertices)
+    elif isinstance(geometry, o3d.geometry.PointCloud):
+        points = np.asarray(geometry.points)
+    else:
+        raise TypeError("Input must be an Open3D TriangleMesh or PointCloud.")
+
+    # Run PCA to find the central axis
+    pca = PCA(n_components=2)
+    pca.fit(points)
+
+    # Get the direction of the principal component (the cylinder's axis)
+    cylinder_axis = pca.components_[0]  # The first component is the direction of the axis
+    cylinder_axis = cylinder_axis / np.linalg.norm(cylinder_axis)  # Normalize to unit vector
+
+    # The center of the cylinder can be estimated as the mean of the points
+    cylinder_center = np.mean(points, axis=0)
+
+    # Compute radial distances to estimate the radius
+    vectors_to_points = points - cylinder_center
+
+    # Project onto the cylinder axis to get the axial component
+    axial_components = np.dot(vectors_to_points, cylinder_axis)[:, np.newaxis] * cylinder_axis
+
+    # Compute the radial component (perpendicular to the axis)
+    radial_components = vectors_to_points - axial_components
+
+    # Compute the distances from the cylinder axis
+    radial_distances = np.linalg.norm(radial_components, axis=1)
+
+    # Estimate the cylinder radius as the mean radial distance
+    cylinder_radius = np.mean(radial_distances)
+
+    # Optionally, visualize the cylinder axis along with the geometry
+    line_set = o3d.geometry.LineSet()
+    line_set.points = o3d.utility.Vector3dVector([cylinder_center, cylinder_center + 10 * cylinder_axis])  # Example line length
+    line_set.lines = o3d.utility.Vector2iVector([[0, 1]])
+
+    # Visualize the geometry with the cylinder axis
+    o3d.visualization.draw_geometries([geometry, line_set])
+
+    return cylinder_axis, cylinder_center, cylinder_radius
+
+
+def find_cylinder_axis_and_center_pcd(point_cloud):
+    """
+    Given a dense point cloud, this function returns the axis direction and center of a cylinder-like structure.
+    It uses PCA (Principal Component Analysis) to find the axis and calculates the center as the mean of the points.
+    
+    Parameters:
+    - point_cloud (open3d.geometry.PointCloud): The input point cloud to process.
+    
+    Returns:
+    - tuple: (cylinder_axis, cylinder_center)
+      - cylinder_axis (numpy.ndarray): The direction of the cylinder's axis.
+      - cylinder_center (numpy.ndarray): The center of the cylinder.
+    """
+    # Extract the points from the point cloud
+    points = np.asarray(point_cloud.points)
+
+    # Run PCA to find the central axis
+    pca = PCA(n_components=2)
+    pca.fit(points)
+
+    # Get the direction of the principal component (the cylinder's axis)
+    cylinder_axis = pca.components_[0]  # The first component is the direction of the axis
+
+    # The center of the cylinder can be estimated as the mean of the points
+    cylinder_center = np.mean(points, axis=0)
+
+    # Optionally, visualize the cylinder axis along with the point cloud
+    line_set = o3d.geometry.LineSet()
+    line_set.points = o3d.utility.Vector3dVector([cylinder_center, cylinder_center + 10 * cylinder_axis])  # Example line length
+    line_set.lines = o3d.utility.Vector2iVector([[0, 1]])
+
+    # Visualize the point cloud with the cylinder axis
+    o3d.visualization.draw_geometries([point_cloud, line_set])
+
+    return cylinder_axis, cylinder_center
+def compute_cylinder_variance(geometry, cylinder_axis, cylinder_center, cylinder_radius):
+    """
+    Computes the variance of the distances of points from the ideal cylinder surface.
+
+    Parameters:
+    - geometry: The input geometry (Open3D TriangleMesh or PointCloud object).
+    - cylinder_axis: The unit vector along the cylinder's axis (numpy array).
+    - cylinder_center: A point on the cylinder axis, defining its center (numpy array).
+    - cylinder_radius: The expected radius of the cylinder.
+
+    Returns:
+    - variance: The variance of the distance errors.
+    """
+    # Extract points from the input geometry
+    if isinstance(geometry, o3d.geometry.TriangleMesh):
+        points = np.asarray(geometry.vertices)
+    elif isinstance(geometry, o3d.geometry.PointCloud):
+        points = np.asarray(geometry.points)
+    else:
+        raise TypeError("Input must be an Open3D TriangleMesh or PointCloud.")
+
+    # Normalize the cylinder axis to ensure it's a unit vector
+    cylinder_axis = cylinder_axis / np.linalg.norm(cylinder_axis)
+
+    # Compute the vector from the cylinder center to each point
+    vectors_to_points = points - cylinder_center
+
+    # Project these vectors onto the cylinder axis to get the axial component
+    axial_components = np.dot(vectors_to_points, cylinder_axis)[:, np.newaxis] * cylinder_axis
+
+    # Compute the radial component (perpendicular to the cylinder axis)
+    radial_components = vectors_to_points - axial_components
+
+    # Compute the distances from the cylinder axis (should ideally be equal to cylinder_radius)
+    radial_distances = np.linalg.norm(radial_components, axis=1)
+
+    # Compute the squared error from the expected radius
+    errors = (radial_distances - cylinder_radius) ** 2
+
+    # Compute variance
+    variance = np.var(errors)
+
+    return variance
+
+
+def compute_binned_cylinder_variance(geometry, cylinder_axis, cylinder_center, cylinder_radius, num_bins=20):
+    """
+    Computes the variance of the distances of points from the ideal cylinder surface, 
+    binned by their z-coordinates.
+
+    Parameters:
+    - geometry: The input geometry (Open3D TriangleMesh or PointCloud object).
+    - cylinder_axis: The unit vector along the cylinder's axis (numpy array).
+    - cylinder_center: A point on the cylinder axis, defining its center (numpy array).
+    - cylinder_radius: The expected radius of the cylinder.
+    - num_bins: The number of bins for z-coordinates.
+
+    Returns:
+    - bin_centers: The center z-values of the bins.
+    - binned_variances: The variance of radial distances in each z-bin.
+    """
+    # Extract points from the input geometry
+    if isinstance(geometry, o3d.geometry.TriangleMesh):
+        points = np.asarray(geometry.vertices)
+    elif isinstance(geometry, o3d.geometry.PointCloud):
+        points = np.asarray(geometry.points)
+    else:
+        raise TypeError("Input must be an Open3D TriangleMesh or PointCloud.")
+
+    # Normalize the cylinder axis to ensure it's a unit vector
+    cylinder_axis = cylinder_axis / np.linalg.norm(cylinder_axis)
+
+    # Compute the vector from the cylinder center to each point
+    vectors_to_points = points - cylinder_center
+
+    # Project these vectors onto the cylinder axis to get the axial (z) component
+    axial_components = np.dot(vectors_to_points, cylinder_axis)[:, np.newaxis] * cylinder_axis
+
+    # Compute the radial component (perpendicular to the cylinder axis)
+    radial_components = vectors_to_points - axial_components
+
+    # Compute the distances from the cylinder axis (should ideally be equal to cylinder_radius)
+    radial_distances = np.linalg.norm(radial_components, axis=1)
+
+    # Get z-coordinates along the cylinder axis
+    z_coords = np.dot(vectors_to_points, cylinder_axis)
+
+    # Define bins for z-coordinates
+    z_min, z_max = np.min(z_coords), np.max(z_coords)
+    bins = np.linspace(z_min, z_max, num_bins + 1)
+    bin_centers = (bins[:-1] + bins[1:]) / 2  # Compute bin centers
+
+    # Compute variance in each bin
+    binned_variances = []
+    for i in range(num_bins):
+        in_bin = (z_coords >= bins[i]) & (z_coords < bins[i + 1])
+        if np.sum(in_bin) > 1:  # Ensure we have at least two points to compute variance
+            variance = np.var((radial_distances[in_bin] - cylinder_radius) ** 2)
+        else:
+            variance = np.nan  # Not enough points to compute variance
+        binned_variances.append(variance)
+
+    return bin_centers, np.array(binned_variances)
+
+def compute_and_plot_binned_cylinder_variance(geometry, cylinder_axis, cylinder_center, cylinder_radius, num_bins=20):
+    """
+    Computes and plots the variance of the distances of points from the ideal cylinder surface, 
+    binned by their z-coordinates.
+
+    Parameters:
+    - geometry: The input geometry (Open3D TriangleMesh or PointCloud object).
+    - cylinder_axis: The unit vector along the cylinder's axis (numpy array).
+    - cylinder_center: A point on the cylinder axis, defining its center (numpy array).
+    - cylinder_radius: The expected radius of the cylinder.
+    - num_bins: The number of bins for z-coordinates.
+
+    Returns:
+    - bin_centers: The center z-values of the bins.
+    - binned_variances: The variance of radial distances in each z-bin.
+    """
+    # Extract points from the input geometry
+    if isinstance(geometry, o3d.geometry.TriangleMesh):
+        points = np.asarray(geometry.vertices)
+    elif isinstance(geometry, o3d.geometry.PointCloud):
+        points = np.asarray(geometry.points)
+    else:
+        raise TypeError("Input must be an Open3D TriangleMesh or PointCloud.")
+
+    # Normalize the cylinder axis to ensure it's a unit vector
+    cylinder_axis = cylinder_axis / np.linalg.norm(cylinder_axis)
+
+    # Compute the vector from the cylinder center to each point
+    vectors_to_points = points - cylinder_center
+
+    # Project these vectors onto the cylinder axis to get the axial (z) component
+    axial_components = np.dot(vectors_to_points, cylinder_axis)[:, np.newaxis] * cylinder_axis
+
+    # Compute the radial component (perpendicular to the cylinder axis)
+    radial_components = vectors_to_points - axial_components
+
+    # Compute the distances from the cylinder axis (should ideally be equal to cylinder_radius)
+    radial_distances = np.linalg.norm(radial_components, axis=1)
+
+    # Get z-coordinates along the cylinder axis
+    z_coords = np.dot(vectors_to_points, cylinder_axis)
+
+    # Define bins for z-coordinates
+    z_min, z_max = np.min(z_coords), np.max(z_coords)
+    bins = np.linspace(z_min, z_max, num_bins + 1)
+    bin_centers = (bins[:-1] + bins[1:]) / 2  # Compute bin centers
+
+    # Compute variance in each bin
+    binned_variances = []
+    for i in range(num_bins):
+        in_bin = (z_coords >= bins[i]) & (z_coords < bins[i + 1])
+        if np.sum(in_bin) > 1:  # Ensure we have at least two points to compute variance
+            variance = np.var((radial_distances[in_bin] - cylinder_radius) ** 2)
+        else:
+            variance = np.nan  # Not enough points to compute variance
+        binned_variances.append(variance)
+
+    # Convert to numpy arrays for easier handling
+    bin_centers = np.array(bin_centers)
+    binned_variances = np.array(binned_variances)
+
+    # Plot the variance as a function of z
+    plt.figure(figsize=(8, 5))
+    plt.plot(bin_centers, binned_variances, marker='o', linestyle='-', color='b', label="Radial Variance")
+    plt.xlabel("Z Coordinate Along Cylinder Axis")
+    plt.ylabel("Radial Variance")
+    plt.title("Radial Variance as a Function of Z")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    return bin_centers, binned_variances
+
+
+def compute_and_plot_binned_cylinder_center(geometry, cylinder_axis, cylinder_center, num_bins=20):
+    """
+    Computes and plots the estimated cylinder center (x, y) as a function of z.
+
+    Parameters:
+    - geometry: The input geometry (Open3D TriangleMesh or PointCloud object).
+    - cylinder_axis: The unit vector along the cylinder's axis (numpy array).
+    - cylinder_center: A point on the cylinder axis, defining its center (numpy array).
+    - num_bins: The number of bins for z-coordinates.
+
+    Returns:
+    - bin_centers: The center z-values of the bins.
+    - binned_x_centers: The estimated x-coordinates of the cylinder center per bin.
+    - binned_y_centers: The estimated y-coordinates of the cylinder center per bin.
+    """
+    # Extract points from the input geometry
+    if isinstance(geometry, o3d.geometry.TriangleMesh):
+        points = np.asarray(geometry.vertices)
+    elif isinstance(geometry, o3d.geometry.PointCloud):
+        points = np.asarray(geometry.points)
+    else:
+        raise TypeError("Input must be an Open3D TriangleMesh or PointCloud.")
+
+    # Normalize the cylinder axis to ensure it's a unit vector
+    cylinder_axis = cylinder_axis / np.linalg.norm(cylinder_axis)
+
+    # Compute the vector from the cylinder center to each point
+    vectors_to_points = points - cylinder_center
+
+    # Compute the z-coordinates along the cylinder axis
+    z_coords = np.dot(vectors_to_points, cylinder_axis)
+
+    # Define bins for z-coordinates
+    z_min, z_max = np.min(z_coords), np.max(z_coords)
+    bins = np.linspace(z_min, z_max, num_bins + 1)
+    bin_z_centers = (bins[:-1] + bins[1:]) / 2  # Compute bin centers
+
+    # Compute the estimated cylinder center (x, y) in each bin
+    binned_x_centers = []
+    binned_y_centers = []
+
+    for i in range(num_bins):
+        in_bin = (z_coords >= bins[i]) & (z_coords < bins[i + 1])
+        if np.sum(in_bin) > 0:  # Ensure we have points in the bin
+            avg_x = np.mean(points[in_bin, 0])  # Compute mean x
+            avg_y = np.mean(points[in_bin, 1])  # Compute mean y
+        else:
+            avg_x, avg_y = np.nan, np.nan  # Handle empty bins
+
+        binned_x_centers.append(avg_x)
+        binned_y_centers.append(avg_y)
+
+    # Convert to numpy arrays
+    bin_z_centers = np.array(bin_z_centers)
+    binned_x_centers = np.array(binned_x_centers)
+    binned_y_centers = np.array(binned_y_centers)
+
+    # Plot x and y coordinates of the estimated cylinder center
+    plt.figure(figsize=(8, 5))
+    plt.plot(bin_z_centers, binned_x_centers-np.mean(binned_x_centers), marker='o', linestyle='-', color='r', label="Estimated X Center")
+    plt.plot(bin_z_centers, binned_y_centers-np.mean(binned_y_centers), marker='s', linestyle='-', color='b', label="Estimated Y Center")
+    # plt.plot(bin_centers, binned_x_centers-cylinder_center[0], marker='o', linestyle='-', color='r', label="Relative X Center")
+    # plt.plot(bin_centers, binned_y_centers-cylinder_center[1], marker='s', linestyle='-', color='b', label="Relative Y Center")
+    plt.xlabel("Z Coordinate Along Cylinder Axis")
+    plt.ylabel("Estimated Cylinder Center (X, Y)")
+    plt.title("Estimated Cylinder Center as a Function of Z")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    return bin_z_centers, binned_x_centers, binned_y_centers
