@@ -846,6 +846,78 @@ def compute_and_plot_binned_cylinder_variance(geometry, cylinder_axis, cylinder_
 
     return bin_centers, binned_variances
 
+def compute_and_plot_binned_cylinder_std(geometry, cylinder_axis, cylinder_center, cylinder_radius, num_bins=20):
+    """
+    Computes and plots the variance of the distances of points from the ideal cylinder surface, 
+    binned by their z-coordinates.
+
+    Parameters:
+    - geometry: The input geometry (Open3D TriangleMesh or PointCloud object).
+    - cylinder_axis: The unit vector along the cylinder's axis (numpy array).
+    - cylinder_center: A point on the cylinder axis, defining its center (numpy array).
+    - cylinder_radius: The expected radius of the cylinder.
+    - num_bins: The number of bins for z-coordinates.
+
+    Returns:
+    - bin_centers: The center z-values of the bins.
+    - binned_variances: The variance of radial distances in each z-bin.
+    """
+    # Extract points from the input geometry
+    if isinstance(geometry, o3d.geometry.TriangleMesh):
+        points = np.asarray(geometry.vertices)
+    elif isinstance(geometry, o3d.geometry.PointCloud):
+        points = np.asarray(geometry.points)
+    else:
+        raise TypeError("Input must be an Open3D TriangleMesh or PointCloud.")
+
+    # Normalize the cylinder axis to ensure it's a unit vector
+    cylinder_axis = cylinder_axis / np.linalg.norm(cylinder_axis)
+
+    # Compute the vector from the cylinder center to each point
+    vectors_to_points = points - cylinder_center
+
+    # Project these vectors onto the cylinder axis to get the axial (z) component
+    axial_components = np.dot(vectors_to_points, cylinder_axis)[:, np.newaxis] * cylinder_axis
+
+    # Compute the radial component (perpendicular to the cylinder axis)
+    radial_components = vectors_to_points - axial_components
+
+    # Compute the distances from the cylinder axis (should ideally be equal to cylinder_radius)
+    radial_distances = np.linalg.norm(radial_components, axis=1)
+
+    # Get z-coordinates along the cylinder axis
+    z_coords = np.dot(vectors_to_points, cylinder_axis)
+
+    # Define bins for z-coordinates
+    z_min, z_max = np.min(z_coords), np.max(z_coords)
+    bins = np.linspace(z_min, z_max, num_bins + 1)
+    bin_centers = (bins[:-1] + bins[1:]) / 2  # Compute bin centers
+
+    # Compute variance in each bin
+    binned_variances = []
+    for i in range(num_bins):
+        in_bin = (z_coords >= bins[i]) & (z_coords < bins[i + 1])
+        if np.sum(in_bin) > 1:  # Ensure we have at least two points to compute variance
+            variance = np.var((radial_distances[in_bin] - cylinder_radius) ** 2)
+        else:
+            variance = np.nan  # Not enough points to compute variance
+        binned_variances.append(variance)
+
+    # Convert to numpy arrays for easier handling
+    bin_centers = np.array(bin_centers)
+    binned_variances = np.array(binned_variances)
+    binned_stds = np.sqrt(binned_variances)
+    # Plot the variance as a function of z
+    plt.figure(figsize=(8, 5))
+    plt.plot(bin_centers, np.sqrt(binned_variances)*1e6, marker='o', linestyle='-', color='g', label="Radial std")
+    plt.xlabel("Z Coordinate Along Cylinder Axis")
+    plt.ylabel("Radial Standard Deviation (um)")
+    plt.title("Radial Standard Deviation as a Function of Z")
+    #plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    return bin_centers, binned_stds
 
 def compute_and_plot_binned_cylinder_center(geometry, cylinder_axis, cylinder_center, num_bins=20):
     """
