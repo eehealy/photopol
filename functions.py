@@ -7,6 +7,9 @@ import xml.etree.ElementTree as ET
 import os
 from sklearn.decomposition import PCA
 from mpl_toolkits.mplot3d import Axes3D
+from scipy.spatial.distance import cdist
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
 
 def filter_mesh_by_cylinder(mesh, cylinder_radius, cylinder_height, cylinder_center=None):
     """
@@ -510,7 +513,7 @@ def plot_meshes_with_vectors(mesh_plate, normal_vector, plate_center,
     ax.legend()
     plt.show()
 
-def filter_points_in_cylinder(pcd, cylinder_axis, cylinder_center, cylinder_radius, cylinder_height, output_file=None):
+def filter_points_in_cylinder(pcd, cylinder_axis, cylinder_center, cylinder_radius, cylinder_height, output_file=None, visualization=True):
     """
     Filters the points in the point cloud that lie within a specified cylinder.
     
@@ -564,7 +567,8 @@ def filter_points_in_cylinder(pcd, cylinder_axis, cylinder_center, cylinder_radi
     filtered_pcd.colors = o3d.utility.Vector3dVector(valid_colors)  # Assign original colors
 
     # Visualize the filtered point cloud
-    o3d.visualization.draw_geometries([filtered_pcd])
+    if visualization:
+        o3d.visualization.draw_geometries([filtered_pcd])
 
     # Optionally, save the filtered point cloud to a new file
     if output_file:
@@ -634,7 +638,7 @@ def find_cylinder_axis_center_radius(geometry):
     return cylinder_axis, cylinder_center, cylinder_radius
 
 
-def find_cylinder_axis_and_center_pcd(point_cloud):
+def find_cylinder_axis_and_center_pcd(point_cloud, visualization=True):
     """
     Given a dense point cloud, this function returns the axis direction and center of a cylinder-like structure.
     It uses PCA (Principal Component Analysis) to find the axis and calculates the center as the mean of the points.
@@ -664,10 +668,10 @@ def find_cylinder_axis_and_center_pcd(point_cloud):
     line_set = o3d.geometry.LineSet()
     line_set.points = o3d.utility.Vector3dVector([cylinder_center, cylinder_center + 10 * cylinder_axis])  # Example line length
     line_set.lines = o3d.utility.Vector2iVector([[0, 1]])
+    if visualization:
+        o3d.visualization.draw_geometries([point_cloud, line_set])
 
-    # Visualize the point cloud with the cylinder axis
-    o3d.visualization.draw_geometries([point_cloud, line_set])
-
+        
     return cylinder_axis, cylinder_center
 def compute_cylinder_variance(geometry, cylinder_axis, cylinder_center, cylinder_radius):
     """
@@ -898,7 +902,7 @@ def compute_and_plot_binned_cylinder_std(geometry, cylinder_axis, cylinder_cente
     for i in range(num_bins):
         in_bin = (z_coords >= bins[i]) & (z_coords < bins[i + 1])
         if np.sum(in_bin) > 1:  # Ensure we have at least two points to compute variance
-            variance = np.var((radial_distances[in_bin] - cylinder_radius) ** 2)
+            variance = np.var((radial_distances[in_bin] - cylinder_radius))
         else:
             variance = np.nan  # Not enough points to compute variance
         binned_variances.append(variance)
@@ -907,17 +911,21 @@ def compute_and_plot_binned_cylinder_std(geometry, cylinder_axis, cylinder_cente
     bin_centers = np.array(bin_centers)
     binned_variances = np.array(binned_variances)
     binned_stds = np.sqrt(binned_variances)
+    binned_stds_rescale = binned_stds/8 # Convert units to m (8units ~ 1m)
+    
     # Plot the variance as a function of z
     plt.figure(figsize=(8, 5))
-    plt.plot(bin_centers, np.sqrt(binned_variances)*1e6, marker='o', linestyle='-', color='g', label="Radial std")
+    plt.plot(bin_centers, binned_stds_rescale*1e6,#-1.3e3/np.sqrt(3), 
+             marker='o', linestyle='-', color='g', label="Radial std")
+    plt.plot(bin_centers, np.full(len(bin_centers),650), color='r', linestyle='--', label='Standard deviation for hex')
     plt.xlabel("Z Coordinate Along Cylinder Axis")
     plt.ylabel("Radial Standard Deviation (um)")
     plt.title("Radial Standard Deviation as a Function of Z")
-    #plt.legend()
+    plt.legend()
     plt.grid(True)
     plt.show()
 
-    return bin_centers, binned_stds
+    return bin_centers, binned_stds_rescale
 
 def compute_and_plot_binned_cylinder_center(geometry, cylinder_axis, cylinder_center, num_bins=20):
     """
@@ -990,3 +998,390 @@ def compute_and_plot_binned_cylinder_center(geometry, cylinder_axis, cylinder_ce
     plt.show()
 
     return bin_z_centers, binned_x_centers, binned_y_centers
+
+
+def compute_hexagonal_rod_variance(geometry, rod_axis, rod_center, rod_radius):
+    """
+    Computes the variance of the distances of points from the ideal hexagonal rod surface.
+
+    Parameters:
+    - geometry: The input geometry (Open3D TriangleMesh or PointCloud object).
+    - rod_axis: The unit vector along the rod's axis (numpy array).
+    - rod_center: A point on the rod axis, defining its center (numpy array).
+    - rod_radius: The radius of the hexagonal rod (distance from the center to the edge of the hexagon).
+
+    Returns:
+    - variance: The variance of the distance errors from the ideal hexagonal rod surface.
+    """
+    # Extract points from the input geometry
+    if isinstance(geometry, o3d.geometry.TriangleMesh):
+        points = np.asarray(geometry.vertices)
+    elif isinstance(geometry, o3d.geometry.PointCloud):
+        points = np.asarray(geometry.points)
+    else:
+        raise TypeError("Input must be an Open3D TriangleMesh or PointCloud.")
+
+    # Normalize the rod axis to ensure it's a unit vector
+    rod_axis = rod_axis / np.linalg.norm(rod_axis)
+
+    # Compute the vector from the rod center to each point
+    vectors_to_points = points - rod_center
+
+    # Project these vectors onto the rod axis to get the axial component (z-component)
+    axial_components = np.dot(vectors_to_points, rod_axis)[:, np.newaxis] * rod_axis
+
+    # Compute the radial component (perpendicular to the rod axis)
+    radial_components = vectors_to_points - axial_components
+
+    # Now we need to compute the distance to the hexagonal surface in the plane orthogonal to the rod axis
+    radial_distances = np.linalg.norm(radial_components, axis=1)
+
+    # Project the points onto the plane orthogonal to the rod axis (this is the 2D hexagonal surface)
+    points_2d = radial_components
+
+    # Compute the angle of the radial points in polar coordinates
+    angles = np.arctan2(points_2d[:, 1], points_2d[:, 0])
+
+    # Normalize the angles to be between 0 and 2π
+    angles = np.mod(angles, 2 * np.pi)
+
+    # Compute the distance to the closest edge of a regular hexagon in 2D
+    # The hexagon has 6 edges, so we need to check the distance to the nearest edge
+    hex_edge_distances = np.minimum(np.abs(radial_distances - rod_radius), rod_radius)
+
+    # Compute the squared error from the expected radius (ideal distance from the center to the edge)
+    errors = (hex_edge_distances) ** 2
+
+    # Compute variance
+    variance = np.var(errors)
+
+    return variance
+
+def find_hexagonal_rod_axis_and_center_pcd(point_cloud):
+    """
+    Given a dense point cloud of a hexagonal rod, this function returns the axis direction, 
+    center of the rod, and the angle of the rod's axis relative to the x-axis,
+    as well as the fitted radius of the rod.
+    
+    Parameters:
+    - point_cloud (open3d.geometry.PointCloud): The input point cloud.
+    
+    Returns:
+    - tuple: (rod_axis, rod_center, rod_angle, rod_radius)
+      - rod_axis (numpy.ndarray): The direction of the hexagonal rod's axis.
+      - rod_center (numpy.ndarray): The center of the rod.
+      - rod_angle (float): The angle of the rod's axis relative to the x-axis (in radians).
+      - rod_radius (float): The fitted radius of the hexagonal rod.
+    """
+    # Extract points
+    points = np.asarray(point_cloud.points)
+
+    # Run PCA to find the main elongation axis (the rod axis)
+    pca = PCA(n_components=2)
+    pca.fit(points)
+
+    # The first principal component is the rod axis direction
+    rod_axis = pca.components_[0]
+
+    # The rod center can still be approximated as the mean of the points
+    rod_center = np.mean(points, axis=0)
+
+    # Calculate the angle of the rod's axis relative to the x-axis (angle in radians)
+    x_axis = np.array([1, 0, 0])  # Unit vector along the x-axis
+    rod_angle = np.arccos(np.dot(rod_axis, x_axis) / (np.linalg.norm(rod_axis) * np.linalg.norm(x_axis)))
+
+    # Compute radial distances from the center (project points to the plane orthogonal to the rod axis)
+    vectors_to_points = points - rod_center
+    axial_components = np.dot(vectors_to_points, rod_axis)[:, np.newaxis] * rod_axis
+    radial_components = vectors_to_points - axial_components
+    radial_distances = np.linalg.norm(radial_components, axis=1)
+
+    # Fit the rod radius (we can take the mean or median of the radial distances)
+    rod_radius = np.mean(radial_distances)
+
+    # Optional visualization
+    line_set = o3d.geometry.LineSet()
+    line_set.points = o3d.utility.Vector3dVector([rod_center, rod_center + 10 * rod_axis])
+    line_set.lines = o3d.utility.Vector2iVector([[0, 1]])
+
+    o3d.visualization.draw_geometries([point_cloud, line_set])
+
+    return rod_axis, rod_center, rod_angle, rod_radius
+
+def compute_variance_binned_by_axis_distance(point_cloud, rod_axis, rod_center, num_bins=10):
+    """
+    Computes the variance of the radial distances from the rod's axis, binned by distance along the axis.
+
+    Parameters:
+    - point_cloud (open3d.geometry.PointCloud): The input point cloud of the hexagonal rod.
+    - rod_axis (numpy.ndarray): The direction of the rod's axis.
+    - rod_center (numpy.ndarray): The center of the rod.
+    - num_bins (int): The number of bins to divide the distance along the rod axis.
+
+    Returns:
+    - binned_variance (list): List of variances for each bin.
+    - bin_centers (numpy.ndarray): The center values of each bin (i.e., the distance along the axis).
+    """
+    # Extract the points from the point cloud
+    points = np.asarray(point_cloud.points)
+
+    # Compute the vector from the center to each point
+    vectors_to_points = points - rod_center
+
+    # Project the vectors onto the rod axis to get the distance along the rod axis
+    axial_components = np.dot(vectors_to_points, rod_axis)[:, np.newaxis] * rod_axis
+    distances_along_axis = np.linalg.norm(axial_components, axis=1)
+
+    # Compute the radial components (perpendicular to the rod axis)
+    radial_components = vectors_to_points - axial_components
+    radial_distances = np.linalg.norm(radial_components, axis=1)
+
+    # Bin the distances along the axis
+    min_distance = np.min(distances_along_axis)
+    max_distance = np.max(distances_along_axis)
+    bin_edges = np.linspace(min_distance, max_distance, num_bins + 1)
+
+    # Calculate the variance within each bin
+    binned_variance = []
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2  # Find the center of each bin
+
+    for i in range(num_bins):
+        # Find points within this bin
+        bin_mask = (distances_along_axis >= bin_edges[i]) & (distances_along_axis < bin_edges[i + 1])
+        bin_radial_distances = radial_distances[bin_mask]
+        
+        if len(bin_radial_distances) > 0:  # Avoid empty bins
+            # Compute variance for points in this bin
+            bin_variance = np.var(bin_radial_distances)
+        else:
+            bin_variance = np.nan  # If no points in the bin, set variance to NaN
+
+        binned_variance.append(bin_variance)
+
+    return binned_variance, bin_centers
+
+''' hex plotting functions'''
+
+def plot_xy_projection(point_cloud):
+    """
+    Plots the x and y components of a 3D point cloud in 2D, as if looking down the z-axis.
+
+    Parameters:
+    - point_cloud (open3d.geometry.PointCloud): The input point cloud.
+
+    Returns:
+    - None (displays a 2D scatter plot).
+    """
+    # Extract point coordinates
+    points = np.asarray(point_cloud.points)
+
+    # Extract x and y coordinates
+    x = points[:, 0]
+    y = points[:, 1]
+
+    # Create 2D scatter plot
+    plt.figure(figsize=(8, 8))
+    plt.scatter(x, y, s=1, alpha=0.5)  # Adjust size and transparency for clarity
+    plt.xlabel("X")
+    plt.ylabel("Y")
+    plt.title("Top-down View of Point Cloud (XY Projection)")
+    plt.axis("equal")  # Keep aspect ratio equal for correct proportions
+    plt.grid(True)
+
+    # Show the plot
+    plt.show()
+def project_pcd_onto_plane(point_cloud, plane_normal, plane_point):
+    """
+    Projects a point cloud onto a plane defined by its normal and a point on the plane.
+
+    Parameters:
+    - point_cloud (o3d.geometry.PointCloud): The input 3D point cloud.
+    - plane_normal (numpy.ndarray): The normal vector of the plane (should be a unit vector).
+    - plane_point (numpy.ndarray): A point on the plane.
+
+    Returns:
+    - o3d.geometry.PointCloud: The projected 2D point cloud.
+    """
+    # Ensure normal is a unit vector
+    plane_normal = plane_normal / np.linalg.norm(plane_normal)
+
+    # Convert Open3D point cloud to NumPy array
+    points = np.asarray(point_cloud.points)
+
+    # Compute projection of each point onto the plane
+    vectors_to_plane = points - plane_point  # Vector from plane_point to each point
+    distances = np.dot(vectors_to_plane, plane_normal)  # Perpendicular distance to plane
+    projected_points = points - np.outer(distances, plane_normal)  # Move points onto plane
+
+    # Create new Open3D point cloud with projected points
+    projected_pcd = o3d.geometry.PointCloud()
+    projected_pcd.points = o3d.utility.Vector3dVector(projected_points)
+
+    return projected_pcd
+
+def project_points_onto_plane(point_cloud, plane_normal, plane_point):
+    """
+    Projects a point cloud onto a plane and returns the projected 3D points as a NumPy array.
+    """
+    # Ensure normal is a unit vector
+    plane_normal = plane_normal / np.linalg.norm(plane_normal)
+
+    # Convert Open3D point cloud to NumPy array
+    points = np.asarray(point_cloud.points)
+
+    if points.size == 0:
+        print("Warning: Input point cloud is empty.")
+        return np.array([])  # Return an empty array to avoid indexing errors
+
+    # Compute projection of each point onto the plane
+    vectors_to_plane = points - plane_point
+    distances = np.dot(vectors_to_plane, plane_normal)
+    projected_points = points - np.outer(distances, plane_normal)
+
+    return np.array(projected_points)  # Ensure it's a NumPy array
+
+def hexagon_vertices_2D(center, radius, angle=0):
+    n = 6  # A hexagon has 6 sides
+    angles = np.linspace(0, 2 * np.pi, n, endpoint=False) + angle  # Angles for each vertex
+    vertices = np.column_stack((center[0] + radius * np.cos(angles), 
+                                center[1] + radius * np.sin(angles)))  # Calculate (x, y) coordinates
+    return vertices
+
+
+# Function to compute the perpendicular distance from a point to a line segment
+def point_to_segment_distance(p, v1, v2):
+    # Vector from v1 to v2
+    line_vec = v2 - v1
+    # Vector from v1 to point p
+    point_vec = p - v1
+    # Project point_vec onto line_vec to get the projection scalar
+    line_len_sq = np.dot(line_vec, line_vec)
+    if line_len_sq == 0:  # avoid division by zero, in case v1 == v2 (shouldn't happen for hexagon)
+        return np.linalg.norm(p - v1)
+    proj = np.dot(point_vec, line_vec) / line_len_sq
+    # Clamping the projection to the segment
+    proj = np.clip(proj, 0, 1)
+    # Find the closest point on the line segment
+    closest_point = v1 + proj * line_vec
+    # Return the distance from p to the closest point
+    return np.linalg.norm(p - closest_point)
+
+# Function to compute the minimum distance from a point to the hexagon edges
+def distance_to_hexagon_edges(point, hexagon_vertices):
+    min_dist = float('inf')  # Start with an infinitely large distance
+    n = len(hexagon_vertices)
+    # Check distances to all edges (line segments between consecutive vertices)
+    for i in range(n):
+        # Vertices of the current edge (v1, v2)
+        v1 = hexagon_vertices[i]
+        v2 = hexagon_vertices[(i + 1) % n]  # Next vertex, wrap around with modulus
+        # Calculate the distance from the point to this edge
+        dist = point_to_segment_distance(point, v1, v2)
+        min_dist = min(min_dist, dist)
+    return min_dist
+
+def hexagon_vertices(center, radius, angle, axis_direction):
+    """
+    Generate the 3D vertices of a hexagonal rod.
+    
+    Parameters:
+    - center: The center of the hexagonal rod (x, y, z).
+    - radius: The radius of the hexagon.
+    - angle: The rotation angle of the hexagon (around the axis direction).
+    - axis_direction: A 3D vector (x, y, z) defining the axis of the hexagonal rod.
+    
+    Returns:
+    - A list of 12 vertices (2 sets of 6 for top and bottom faces).
+    """
+    # Define the 6 vertices of a regular hexagon in the XY-plane (radius is the distance from the center)
+    hexagon_2d = np.array([
+        [radius * np.cos(np.pi / 3 * i), radius * np.sin(np.pi / 3 * i)] for i in range(6)
+    ])
+
+    # Normalize the axis direction to ensure it's a unit vector
+    axis_direction = axis_direction / np.linalg.norm(axis_direction)
+
+    # Create a rotation matrix based on the axis direction and angle
+    # We will use the rotation matrix for rotating points in 3D space.
+    def rotation_matrix(axis, angle):
+        """
+        Create a rotation matrix for rotating points by 'angle' around the given 'axis'.
+        """
+        axis = axis / np.linalg.norm(axis)
+        cos_theta = np.cos(angle)
+        sin_theta = np.sin(angle)
+        ux, uy, uz = axis
+        
+        return np.array([
+            [cos_theta + ux**2 * (1 - cos_theta), ux * uy * (1 - cos_theta) - uz * sin_theta, ux * uz * (1 - cos_theta) + uy * sin_theta],
+            [uy * ux * (1 - cos_theta) + uz * sin_theta, cos_theta + uy**2 * (1 - cos_theta), uy * uz * (1 - cos_theta) - ux * sin_theta],
+            [uz * ux * (1 - cos_theta) - uy * sin_theta, uz * uy * (1 - cos_theta) + ux * sin_theta, cos_theta + uz**2 * (1 - cos_theta)]
+        ])
+
+    # Rotation matrix for rotating the hexagon points
+    rot_matrix = rotation_matrix(axis_direction, angle)
+
+    # Rotate and translate the 6 vertices
+    hexagon_3d = []
+    for point in hexagon_2d:
+        # 3D coordinates (x, y, z) where z = 0 (since it's in the XY-plane)
+        point_3d = np.append(point, 0)  # (x, y, 0)
+        # Apply rotation
+        rotated_point = np.dot(rot_matrix, point_3d)
+        hexagon_3d.append(rotated_point)
+
+    # Now we need to add the top and bottom face vertices (offset by the rod's height)
+    # Assuming the center is at the midpoint between the top and bottom faces
+    height = 10  # Assume unit height, this can be set to a different value if needed
+    bottom_face = np.array(hexagon_3d) - axis_direction * height / 2
+    top_face = np.array(hexagon_3d) + axis_direction * height / 2
+
+    # Combine the vertices into a single list (12 vertices)
+    hexagon_vertices = np.vstack((bottom_face, top_face))
+    
+    # Translate the vertices to the given center point
+    hexagon_vertices += center
+
+    return hexagon_vertices
+
+def compute_normal_from_corners(corners):
+    """
+    Compute the normal vector of a plane defined by four corners.
+    """
+    P1, P2, P3, P4 = corners
+
+    v1 = P3 - P1  # Change order
+    v2 = P4 - P1  # Use P4 instead of P2
+
+    print("v1:", v1)
+    print("v2:", v2)
+
+    normal = np.cross(v1, v2)
+    print("Cross product:", normal)
+
+    norm_val = np.linalg.norm(normal)
+    if norm_val == 0:
+        print("Warning: Zero normal vector!")
+        return np.array([0, 0, 0])  # Avoid division by zero
+
+    normal = normal / norm_val
+    return normal
+def point_to_plane_distance(point, plane_normal, plane_point):
+    """
+    Calculate the perpendicular distance from a point to a plane.
+
+    Args:
+    - point (np.array): The coordinates of the point (x0, y0, z0).
+    - plane_normal (np.array): The normal vector to the plane (A, B, C).
+    - plane_point (np.array): A point on the plane (x1, y1, z1).
+
+    Returns:
+    - float: The perpendicular distance from the point to the plane.
+    """
+    # Vector from the point on the plane to the point
+    point_to_plane_vec = point - plane_point
+    
+    # The perpendicular distance is the projection of point_to_plane_vec onto the normal vector
+    distance = np.abs(np.dot(point_to_plane_vec, plane_normal)) / np.linalg.norm(plane_normal)
+    # print(f"The distance from the point to the plane is: {distance}")
+    return distance
